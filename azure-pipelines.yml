@@ -5,7 +5,7 @@ resources:
 
 variables:
   subscription: 'f399aea4-cf33-4d7b-ab5b-858da090b1b2'
-  acr: 'acrsb.azurecr.io'
+  acr: 'acrkimth.azurecr.io'
   acrSecret: 'acr-secret'
   resourceGroup: 'test_resource'
   aks: 'aks-test'
