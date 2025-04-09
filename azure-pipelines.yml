@@ -28,52 +28,49 @@ variables:
   sslCertificate: 'modetour-dev-pfx'
   environment: 'Development'
   env: 'dev'
- 
+
 stages:
-- stage: DockerBuild
-  displayName: Build and push docker images to ACR
+- stage: BuildAndDeploy
+  displayName: Docker 이미지 생성 및 AKS 배포
   jobs:
-  - job: Build
+  - job: BuildAndDeployJob
     steps:
+    # ACR 로그인 및 Docker 이미지 빌드 단계
     - bash: |
         echo $(branch)
         echo ${{ variables.branch }}
         docker login -u $ACR_USER -p $ACR_PASSWORD $(acr)
-      env:
-        ACR_USER: $(ACR_USER)
-        ACR_PASSWORD: $(ACR_PASSWORD)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
-    - bash: |
         docker build --platform=linux/amd64 -t $(acr)/$(name):latest-$(env) -t $(acr)/$(name):$(env)-$(imageTag) \
           -f ./$(projectName)/Dockerfile .
         docker push --all-tags $(acr)/$(name)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
-- stage: DeployAKS
-  dependsOn: DockerBuild
-  displayName: Deployment to AKS
-  jobs:
-  - job: Deployment
-    steps:
+      env:
+        ACR_USER: $(ACR_USER)
+        ACR_PASSWORD: $(ACR_PASSWORD)
+
+    # AKS 배포 단계
     - bash: |
-        az login --service-principal -u $CLIENT_ID -p $CLIENT_PASS  --tenant $TENANT_ID
+        az login --service-principal -u $CLIENT_ID -p $CLIENT_PASS --tenant $TENANT_ID
         az account set --subscription $(subscription)
         az extension add --name aksarc --yes
         az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
         
         CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
-        echo "Updating cluster settings for: $CLUSTER_NAME"
+        echo "클러스터 설정 업데이트 중입니다: $CLUSTER_NAME"
         kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
         
-        # namespace가 없으면 생성
+        # 네임스페이스 생성 (존재하지 않을 경우)
         kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
         kubectl config set-context --current --namespace=$(name)-$(env)
-        # ACR Secret 생성해서 권한 획득
+
+        # ACR Secret 생성 및 권한 설정
         kubectl get secret $(acrSecret) -n $(name)-$(env) || \
         kubectl create secret docker-registry $(acrSecret) \
           --docker-server=$(acr) \
           --docker-username=$ACR_USER \
           --docker-password=$ACR_PASSWORD \
           --namespace $(name)-$(env)
+
+        # Helm Chart를 이용한 배포
         helm upgrade --install \
           --set acrSecret=$(acrSecret) \
           --set name=$(name) \
@@ -103,4 +100,3 @@ stages:
         TENANT_ID: $(TENANT_ID)
         ACR_USER: $(ACR_USER)
         ACR_PASSWORD: $(ACR_PASSWORD)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
