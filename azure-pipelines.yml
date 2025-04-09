@@ -2,7 +2,7 @@ trigger: none
 pr: none
 resources:
 - repo: self
- 
+
 variables:
   subscription: 'f399aea4-cf33-4d7b-ab5b-858da090b1b2'
   acr: 'acrsb.azurecr.io'
@@ -33,70 +33,73 @@ stages:
 - stage: BuildAndDeploy
   displayName: Docker 이미지 생성 및 AKS 배포
   jobs:
-  - job: BuildAndDeployJob
-    steps:
-    # ACR 로그인 및 Docker 이미지 빌드 단계
-    - bash: |
-        echo $(branch)
-        echo ${{ variables.branch }}
-        docker login -u $ACR_USER -p $ACR_PASSWORD $(acr)
-        docker build --platform=linux/amd64 -t $(acr)/$(name):latest-$(env) -t $(acr)/$(name):$(env)-$(imageTag) \
-          -f ./$(projectName)/Dockerfile .
-        docker push --all-tags $(acr)/$(name)
-      env:
-        ACR_USER: $(ACR_USER)
-        ACR_PASSWORD: $(ACR_PASSWORD)
+    - job: BuildAndDeployJob
+      displayName: Build and Deploy Job
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        # ACR 로그인 및 Docker 이미지 빌드 단계
+        - bash: |
+            echo $(branch)
+            echo ${{ variables.branch }}
+            docker login -u $ACR_USER -p $ACR_PASSWORD $(acr)
+            docker build --platform=linux/amd64 -t $(acr)/$(name):latest-$(env) -t $(acr)/$(name):$(env)-$(imageTag) \
+              -f ./$(projectName)/Dockerfile .
+            docker push --all-tags $(acr)/$(name)
+          env:
+            ACR_USER: $(ACR_USER)
+            ACR_PASSWORD: $(ACR_PASSWORD)
 
-    # AKS 배포 단계
-    - bash: |
-        az login --service-principal -u $CLIENT_ID -p $CLIENT_PASS --tenant $TENANT_ID
-        az account set --subscription $(subscription)
-        az extension add --name aksarc --yes
-        az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
-        
-        CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
-        echo "클러스터 설정 업데이트 중입니다: $CLUSTER_NAME"
-        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
-        
-        # 네임스페이스 생성 (존재하지 않을 경우)
-        kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
-        kubectl config set-context --current --namespace=$(name)-$(env)
+        # AKS 배포 단계
+        - bash: |
+            az login --service-principal -u $CLIENT_ID -p $CLIENT_PASS --tenant $TENANT_ID
+            az account set --subscription $(subscription)
+            az extension add --name aksarc --yes
+            az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
+            
+            CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
+            echo "클러스터 설정 업데이트 중입니다: $CLUSTER_NAME"
+            kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
+            
+            # 네임스페이스 생성 (존재하지 않을 경우)
+            kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
+            kubectl config set-context --current --namespace=$(name)-$(env)
 
-        # ACR Secret 생성 및 권한 설정
-        kubectl get secret $(acrSecret) -n $(name)-$(env) || \
-        kubectl create secret docker-registry $(acrSecret) \
-          --docker-server=$(acr) \
-          --docker-username=$ACR_USER \
-          --docker-password=$ACR_PASSWORD \
-          --namespace $(name)-$(env)
+            # ACR Secret 생성 및 권한 설정
+            kubectl get secret $(acrSecret) -n $(name)-$(env) || \
+            kubectl create secret docker-registry $(acrSecret) \
+              --docker-server=$(acr) \
+              --docker-username=$ACR_USER \
+              --docker-password=$ACR_PASSWORD \
+              --namespace $(name)-$(env)
 
-        # Helm Chart를 이용한 배포
-        helm upgrade --install \
-          --set acrSecret=$(acrSecret) \
-          --set name=$(name) \
-          --set namespace=$(name)-$(env) \
-          --set nameservice=$(name)-$(env) \
-          --set nodename=$(nodename) \
-          --set image=$(acr)/$(name):$(env)-$(imageTag) \
-          --set env=$(environment) \
-          --set port=$(port) \
-          --set healthcheck=$(healthcheck) \
-          --set typesvc=ClusterIP \
-          --set requestCpu=$(requestCpu) \
-          --set requestMemory=$(requestMemory) \
-          --set limitCpu=$(limitCpu) \
-          --set limitMemory=$(limitMemory) \
-          --set replica=$(replica) \
-          --set minreplica=$(minreplica) \
-          --set maxreplica=$(maxreplica) \
-          --set targetCPUutilization=60 \
-          --set autoscaler.enable=false \
-          --set ingress.ssl=$(sslCertificate) \
-          --set ingress.host=$(domain) \
-          $(name)-$(env) ./Pipelines/Helm/$(projectName)
-      env:
-        CLIENT_PASS: $(CLIENT_PASS)
-        CLIENT_ID: $(CLIENT_ID)
-        TENANT_ID: $(TENANT_ID)
-        ACR_USER: $(ACR_USER)
-        ACR_PASSWORD: $(ACR_PASSWORD)
+            # Helm Chart를 이용한 배포
+            helm upgrade --install \
+              --set acrSecret=$(acrSecret) \
+              --set name=$(name) \
+              --set namespace=$(name)-$(env) \
+              --set nameservice=$(name)-$(env) \
+              --set nodename=$(nodename) \
+              --set image=$(acr)/$(name):$(env)-$(imageTag) \
+              --set env=$(environment) \
+              --set port=$(port) \
+              --set healthcheck=$(healthcheck) \
+              --set typesvc=ClusterIP \
+              --set requestCpu=$(requestCpu) \
+              --set requestMemory=$(requestMemory) \
+              --set limitCpu=$(limitCpu) \
+              --set limitMemory=$(limitMemory) \
+              --set replica=$(replica) \
+              --set minreplica=$(minreplica) \
+              --set maxreplica=$(maxreplica) \
+              --set targetCPUutilization=60 \
+              --set autoscaler.enable=false \
+              --set ingress.ssl=$(sslCertificate) \
+              --set ingress.host=$(domain) \
+              $(name)-$(env) ./Pipelines/Helm/$(projectName)
+          env:
+            CLIENT_PASS: $(CLIENT_PASS)
+            CLIENT_ID: $(CLIENT_ID)
+            TENANT_ID: $(TENANT_ID)
+            ACR_USER: $(ACR_USER)
+            ACR_PASSWORD: $(ACR_PASSWORD)
