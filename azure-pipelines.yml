@@ -8,7 +8,7 @@ variables:
   acr: 'acrsb.azurecr.io'
   acrSecret: 'acr-secret'
   resourceGroup: 'test_resource'
-  aks: 'aks-test1'
+  aks: 'aks-test'
   nodename: 'nodepool1'
   projectPath: 'Pipelines'
   projectName: 'AzureStackHckTestWebApp'
@@ -62,7 +62,7 @@ stages:
         
         CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
         echo "Updating cluster settings for: $CLUSTER_NAME"
-        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test1.modetour.com:6443
+        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
         
         # namespace가 없으면 생성
         kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
