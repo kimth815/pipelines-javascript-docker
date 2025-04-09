@@ -1,0 +1,106 @@
+trigger: none
+pr: none
+resources:
+- repo: self
+ 
+variables:
+  subscription: 'f399aea4-cf33-4d7b-ab5b-858da090b1b2'
+  acr: 'acrsb.azurecr.io'
+  acrSecret: 'acr-secret'
+  resourceGroup: 'test_resource'
+  aks: 'aks-test1'
+  nodename: 'nodepool1'
+  projectPath: 'Pipelines'
+  projectName: 'AzureStackHckTestWebApp'
+  branch: 'master'
+  name: $[ replace(lower(variables.projectName), '.', '-') ]
+  imageTag: '$(Build.BuildId)'
+  domain: 'aks-test.modetour.com'
+  healthcheck: '/healthcheck'
+  port: '80'
+  requestCpu: '1000m'
+  requestMemory: '1G'
+  limitCpu: '1000m'
+  limitMemory: '1G'
+  replica: '1'
+  minreplica: '1'
+  maxreplica: '1'
+  sslCertificate: 'modetour-dev-pfx'
+  environment: 'Development'
+  env: 'dev'
+ 
+stages:
+- stage: DockerBuild
+  displayName: Build and push docker images to ACR
+  jobs:
+  - job: Build
+    steps:
+    - bash: |
+        echo $(branch)
+        echo ${{ variables.branch }}
+        docker login -u $ACR_USER -p $ACR_PASSWORD $(acr)
+      env:
+        ACR_USER: $(ACR_USER)
+        ACR_PASSWORD: $(ACR_PASSWORD)
+      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
+    - bash: |
+        docker build --platform=linux/amd64 -t $(acr)/$(name):latest-$(env) -t $(acr)/$(name):$(env)-$(imageTag) \
+          -f ./$(projectName)/Dockerfile .
+        docker push --all-tags $(acr)/$(name)
+      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
+- stage: DeployAKS
+  dependsOn: DockerBuild
+  displayName: Deployment to AKS
+  jobs:
+  - job: Deployment
+    steps:
+    - bash: |
+        az login --service-principal -u $CLIENT_ID -p $CLIENT_PASS  --tenant $TENANT_ID
+        az account set --subscription $(subscription)
+        az extension add --name aksarc --yes
+        az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
+        
+        CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
+        echo "Updating cluster settings for: $CLUSTER_NAME"
+        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test1.modetour.com:6443
+        
+        # namespace가 없으면 생성
+        kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
+        kubectl config set-context --current --namespace=$(name)-$(env)
+        # ACR Secret 생성해서 권한 획득
+        kubectl get secret $(acrSecret) -n $(name)-$(env) || \
+        kubectl create secret docker-registry $(acrSecret) \
+          --docker-server=$(acr) \
+          --docker-username=$ACR_USER \
+          --docker-password=$ACR_PASSWORD \
+          --namespace $(name)-$(env)
+        helm upgrade --install \
+          --set acrSecret=$(acrSecret) \
+          --set name=$(name) \
+          --set namespace=$(name)-$(env) \
+          --set nameservice=$(name)-$(env) \
+          --set nodename=$(nodename) \
+          --set image=$(acr)/$(name):$(env)-$(imageTag) \
+          --set env=$(environment) \
+          --set port=$(port) \
+          --set healthcheck=$(healthcheck) \
+          --set typesvc=ClusterIP \
+          --set requestCpu=$(requestCpu) \
+          --set requestMemory=$(requestMemory) \
+          --set limitCpu=$(limitCpu) \
+          --set limitMemory=$(limitMemory) \
+          --set replica=$(replica) \
+          --set minreplica=$(minreplica) \
+          --set maxreplica=$(maxreplica) \
+          --set targetCPUutilization=60 \
+          --set autoscaler.enable=false \
+          --set ingress.ssl=$(sslCertificate) \
+          --set ingress.host=$(domain) \
+          $(name)-$(env) ./Pipelines/Helm/$(projectName)
+      env:
+        CLIENT_PASS: $(CLIENT_PASS)
+        CLIENT_ID: $(CLIENT_ID)
+        TENANT_ID: $(TENANT_ID)
+        ACR_USER: $(ACR_USER)
+        ACR_PASSWORD: $(ACR_PASSWORD)
+      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
