@@ -4,6 +4,7 @@ resources:
 - repo: self
 
 variables:
+  group: Azure-Login-Dimoa-Test
   subscription: 'f399aea4-cf33-4d7b-ab5b-858da090b1b2'
   # acr, acrSecret 변수 제거됨 ✅
   resourceGroup: 'test_resource'
