@@ -1,104 +1,71 @@
-trigger: none
-pr: none
+trigger:
+- main
+
 resources:
 - repo: self
 
 variables:
-  group: Azure-Login-Dimoa-Test
-  subscription: 'f399aea4-cf33-4d7b-ab5b-858da090b1b2'
-  # acr, acrSecret 변수 제거됨 ✅
-  resourceGroup: 'test_resource'
-  aks: 'aks-test'
-  nodename: 'nodepool1'
-  projectPath: 'Pipelines'
-  projectName: 'AzureStackHckTestWebApp'
-  branch: 'master'
-  name: $[ replace(lower(variables.projectName), '.', '-') ]
-  imageTag: '$(Build.BuildId)'
-  domain: 'aks-test.modetour.com'
-  healthcheck: '/healthcheck'
-  port: '80'
-  requestCpu: '1000m'
-  requestMemory: '1G'
-  limitCpu: '1000m'
-  limitMemory: '1G'
-  replica: '1'
-  minreplica: '1'
-  maxreplica: '1'
-  sslCertificate: 'modetour-dev-pfx'
-  environment: 'Development'
-  env: 'dev'
+  dockerRegistryServiceConnection: '20df3106-13cb-457f-8c6f-5eb600a10dcc'
+  imageRepository: 'kimthpipelinesjavascriptdocker'
+  containerRegistry: 'kimthskmycontainerregistry.azurecr.io'
+  dockerfilePath: '**/Dockerfile'
+  tag: '$(Build.BuildId)'
+  imagePullSecret: 'kimthskmycontainerregistry1843a0a3-auth'
+  vmImageName: 'ubuntu-latest'
+  k8sNamespaceForPR: 'review-app-$(System.PullRequest.PullRequestId)'
 
 stages:
-- stage: BuildAndDeploy
-  displayName: Build and Deploy Without ACR
+- stage: Build
+  displayName: Build stage
   jobs:
-  - job: BuildAndDeploy
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
     steps:
-    - bash: |
-        az login --service-principal -u $CLIENT_ID_Dimoa -p $CLIENT_PASS_Dimoa --tenant $TENANT_ID_Dimoa
-        az account set --subscription $(subscription)
-        az extension add --name aksarc --yes
-        az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
-        
-        # 클러스터 설정
-        CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
-        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
-        
-        # 네임스페이스 생성
-        kubectl create namespace $(name)-$(env) --dry-run=client -o yaml | kubectl apply -f -
-        kubectl config set-context --current --namespace=$(name)-$(env)
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
 
-        # Kaniko Pod 정의 (로컬 레지스트리 사용)
-        cat <<EOF > kaniko-pod.yaml
-        apiVersion: v1
-        kind: Pod
-        metadata:
-          name: kaniko-build
-          namespace: $(name)-$(env)
-        spec:
-          containers:
-          - name: kaniko
-            image: gcr.io/kaniko-project/executor:latest
-            args:
-            - "--dockerfile=./$(projectName)/Dockerfile"
-            - "--context=."
-            - "--destination=registry:5000/$(name):$(env)-$(imageTag)"
-            - "--insecure"  # 로컬 레지스트리 SSL 무시
-          restartPolicy: Never
-        EOF
+    - upload: manifests
+      artifact: manifests
 
-        # 레지스트리 배포 (로컬 레지스트리가 없는 경우)
-        kubectl apply -f https://raw.githubusercontent.com/kubernetes/registry/master/deployment/registry.yaml
-        
-        # Kaniko 실행
-        kubectl apply -f kaniko-pod.yaml
-        kubectl wait --for=condition=complete pod/kaniko-build --timeout=600s
-        kubectl delete pod kaniko-build
+- stage: Deploy
+  displayName: Deploy stage
+  dependsOn: Build
 
-        # Helm 배포 (로컬 레지스트리 이미지 사용)
-        helm upgrade --install \
-          --set name=$(name) \
-          --set namespace=$(name)-$(env) \
-          --set image=registry:5000/$(name):$(env)-$(imageTag) \
-          --set env=$(environment) \
-          --set port=$(port) \
-          --set healthcheck=$(healthcheck) \
-          --set typesvc=ClusterIP \
-          --set requestCpu=$(requestCpu) \
-          --set requestMemory=$(requestMemory) \
-          --set limitCpu=$(limitCpu) \
-          --set limitMemory=$(limitMemory) \
-          --set replica=$(replica) \
-          --set minreplica=$(minreplica) \
-          --set maxreplica=$(maxreplica) \
-          --set targetCPUutilization=60 \
-          --set autoscaler.enable=false \
-          --set ingress.ssl=$(sslCertificate) \
-          --set ingress.host=$(domain) \
-          $(name)-$(env) ./Pipelines/Helm/$(projectName)
-      env:
-        CLIENT_PASS_Dimoa: $(CLIENT_PASS_Dimoa)
-        CLIENT_ID_Dimoa: $(CLIENT_ID_Dimoa)
-        TENANT_ID_Dimoa: $(TENANT_ID_Dimoa)
-        # ACR_USER_Dimoa, ACR_PASSWORD_Dimoa 변수 제거됨 ✅
+  jobs:
+  - deployment: Deploy
+    condition: and(succeeded(), not(startsWith(variables['Build.SourceBranch'], 'refs/pull/')))
+    displayName: Deploy
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'kimth815pipelinesjavascriptdocker-4052.default'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/manifests/deployment.yml
+                $(Pipeline.Workspace)/manifests/service.yml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
