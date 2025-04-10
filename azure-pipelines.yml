@@ -30,50 +30,53 @@ variables:
   env: 'dev'
 
 stages:
-- stage: DockerBuild
-  displayName: Build and push docker images to ACR
+- stage: BuildAndDeploy
+  displayName: Build and Deploy Directly on AKS
   jobs:
-  - job: Build
+  - job: BuildAndDeploy
     steps:
     - bash: |
-        echo $(branch)
-        echo ${{ variables.branch }}
-        docker login -u $ACR_USER_Dimoa -p $ACR_PASSWORD_Dimoa $(acr)
-      env:
-        ACR_USER_Dimoa: $(ACR_USER_Dimoa)
-        ACR_PASSWORD_Dimoa: $(ACR_PASSWORD_Dimoa)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
-    - bash: |
-        docker build --platform=linux/amd64 -t $(acr)/$(name):latest-$(env) -t $(acr)/$(name):$(env)-$(imageTag) \
-          -f ./$(projectName)/Dockerfile .
-        docker push --all-tags $(acr)/$(name)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
-- stage: DeployAKS
-  dependsOn: DockerBuild
-  displayName: Deployment to AKS
-  jobs:
-  - job: Deployment
-    steps:
-    - bash: |
-        az login --service-principal -u $CLIENT_ID_Dimoa -p $CLIENT_PASS_Dimoa  --tenant $TENANT_ID_Dimoa
+        az login --service-principal -u $CLIENT_ID_Dimoa -p $CLIENT_PASS_Dimoa --tenant $TENANT_ID_Dimoa
         az account set --subscription $(subscription)
-        az extension add --name aksarc --yes
-        az aksarc get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
-        
-        CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')
-        echo "Updating cluster settings for: $CLUSTER_NAME"
-        kubectl config set-cluster "$CLUSTER_NAME" --insecure-skip-tls-verify=true --server=https://aks-test.modetour.com:6443
+        az aks get-credentials --resource-group $(resourceGroup) --name $(aks) --admin
         
         # namespace가 없으면 생성
         kubectl get namespace $(name)-$(env) || kubectl create namespace $(name)-$(env)
         kubectl config set-context --current --namespace=$(name)-$(env)
-        # ACR Secret 생성해서 권한 획득
-        kubectl get secret $(acrSecret) -n $(name)-$(env) || \
-        kubectl create secret docker-registry $(acrSecret) \
-          --docker-server=$(acr) \
-          --docker-username=$ACR_USER_Dimoa \
-          --docker-password=$ACR_PASSWORD_Dimoa \
-          --namespace $(name)-$(env)
+
+        # Kaniko Pod 정의 파일 생성
+        cat <<EOF > kaniko-pod.yaml
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: kaniko-build
+          namespace: $(name)-$(env)
+        spec:
+          containers:
+          - name: kaniko
+            image: gcr.io/kaniko-project/executor:latest
+            args:
+            - "--dockerfile=./$(projectName)/Dockerfile"
+            - "--context=."
+            - "--destination=$(acr)/$(name):$(env)-$(imageTag)"
+            volumeMounts:
+            - name: kaniko-secret
+              mountPath: /kaniko/.docker
+          restartPolicy: Never
+          volumes:
+          - name: kaniko-secret
+            secret:
+              secretName: $(acrSecret)
+        EOF
+
+        # Kaniko Pod 실행 및 모니터링
+        kubectl apply -f kaniko-pod.yaml
+        kubectl wait --for=condition=complete pod/kaniko-build --timeout=600s
+
+        # Kaniko Pod 삭제 (클린업)
+        kubectl delete pod kaniko-build
+
+        # Helm Chart 배포
         helm upgrade --install \
           --set acrSecret=$(acrSecret) \
           --set name=$(name) \
@@ -101,6 +104,3 @@ stages:
         CLIENT_PASS_Dimoa: $(CLIENT_PASS_Dimoa)
         CLIENT_ID_Dimoa: $(CLIENT_ID_Dimoa)
         TENANT_ID_Dimoa: $(TENANT_ID_Dimoa)
-        ACR_USER_Dimoa: $(ACR_USER_Dimoa)
-        ACR_PASSWORD_Dimoa: $(ACR_PASSWORD_Dimoa)
-      #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/${{ variables.branch }}'))
