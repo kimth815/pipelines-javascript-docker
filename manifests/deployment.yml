@@ -14,6 +14,6 @@ spec:
     spec:
       containers:
         - name: kimthpipelinesjavascriptdocker 
-          image: kimthskmycontainerregistry.azurecr.io/kimthpipelinesjavascriptdocker
+          image: kimthylmycontainerregistry.azurecr.io/kimthpipelinesjavascriptdocker
           ports:
           - containerPort: 8080
